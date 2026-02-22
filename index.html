@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>HK Monthly Temperature Matrix</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: #ffffff;
+      color: #333;
+      padding: 20px 24px 40px;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 17px;
+      font-weight: 700;
+      color: #222;
+      margin-bottom: 10px;
+    }
+
+    /* ── Toggle Buttons ─────────────────────────────────────── */
+    #controls {
+      display: flex;
+      justify-content: center;
+      gap: 0;
+      margin-bottom: 16px;
+    }
+
+    .mode-btn {
+      padding: 9px 32px;
+      font-size: 13.5px;
+      font-weight: 600;
+      border: 2px solid #ccc;
+      background: #f5f5f5;
+      color: #777;
+      cursor: pointer;
+      transition: background 0.22s, color 0.22s, border-color 0.22s;
+      letter-spacing: 0.2px;
+    }
+
+    #btn-max {
+      border-radius: 6px 0 0 6px;
+      border-right: 1px solid #ccc;
+    }
+
+    #btn-min {
+      border-radius: 0 6px 6px 0;
+      border-left: 1px solid #ccc;
+    }
+
+    #btn-max.active {
+      background: #a50026;
+      color: #fff;
+      border-color: #a50026;
+    }
+
+    #btn-min.active {
+      background: #313695;
+      color: #fff;
+      border-color: #313695;
+    }
+
+    .mode-btn:not(.active):hover {
+      background: #e8e8e8;
+      color: #444;
+    }
+
+    /* ── Outer layout ───────────────────────────────────────── */
+    #outer {
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      gap: 0;
+    }
+
+    /* ── Tooltip ─────────────────────────────────────────────── */
+    #tooltip {
+      position: fixed;
+      background: rgba(255,255,255,0.97);
+      color: #222;
+      padding: 7px 11px;
+      border-radius: 5px;
+      font-size: 12px;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.12s;
+      border: 1px solid #ccc;
+      z-index: 9999;
+      box-shadow: 0 3px 12px rgba(0,0,0,0.18);
+      white-space: nowrap;
+    }
+
+    text { font-family: Arial, sans-serif; }
+  </style>
+</head>
+<body>
+
+<h1>Hong Kong Monthly Temperature Matrix (Last 10 Years)</h1>
+
+<div id="controls">
+  <button class="mode-btn active" id="btn-max" onclick="switchMode('max')">
+    ▲ Maximum Temperature
+  </button>
+  <button class="mode-btn" id="btn-min" onclick="switchMode('min')">
+    ▼ Minimum Temperature
+  </button>
+</div>
+
+<div id="outer">
+  <svg id="matrix-svg"></svg>
+  <svg id="legend-svg"></svg>
+</div>
+<div id="tooltip"></div>
+
+<script>
+// ════════════════════════════════════════════════════════════════
+//  CONFIGURATION  — all tuneable values in one place
+// ════════════════════════════════════════════════════════════════
+const CONFIG = {
+  cellW:        90,
+  cellH:        66,
+  cellGap:      4,
+  marginTop:    36,
+  marginLeft:   82,
+  marginBottom: 20,
+  marginRight:  10,
+  numYears:     10,
+
+  sparkPad: { t: 6, r: 5, b: 6, l: 5 },
+
+  // Legend (vertical bar, right side)
+  legendW:       64,
+  legendBarW:    20,
+  legendBarH:    280,
+  legendMarginT: 40,
+
+  // ── Intuitive temperature color ramps ──────────────────────
+  // MAX mode: blue (cool max) → white (mid) → red (hot max)
+  colorStopsMax: [
+    { t: 0.00, c: "#313695" },
+    { t: 0.15, c: "#4575b4" },
+    { t: 0.28, c: "#74add1" },
+    { t: 0.42, c: "#abd9e9" },
+    { t: 0.52, c: "#e0f3f8" },
+    { t: 0.62, c: "#fee090" },
+    { t: 0.74, c: "#fdae61" },
+    { t: 0.86, c: "#f46d43" },
+    { t: 0.93, c: "#d73027" },
+    { t: 1.00, c: "#a50026" },
+  ],
+
+  // MIN mode: deep purple/navy (cold min) → pale yellow (warm min)
+  colorStopsMin: [
+    { t: 0.00, c: "#2d004b" },
+    { t: 0.12, c: "#3f007d" },
+    { t: 0.26, c: "#084081" },
+    { t: 0.40, c: "#0570b0" },
+    { t: 0.54, c: "#3690c0" },
+    { t: 0.65, c: "#74a9cf" },
+    { t: 0.76, c: "#a6bddb" },
+    { t: 0.87, c: "#d0d1e6" },
+    { t: 0.94, c: "#f1eef6" },
+    { t: 1.00, c: "#fff7bc" },
+  ],
+
+  sparkMaxColor: "#1a6b1a",   // dark green — max daily line
+  sparkMinColor: "#888888",   // grey       — min daily line
+  sparkLineW:    1.3,
+
+  animDuration:  400,
+};
+
+const MONTH_FULL = [
+  "January","February","March","April","May","June",
+  "July","August","September","October","November","December"
+];
+
+// ════════════════════════════════════════════════════════════════
+//  STATE
+// ════════════════════════════════════════════════════════════════
+let currentMode = "max";
+let _monthlyMap, _years;
+// Shared fixed domain computed once from all data (both max & min)
+let _globalMin, _globalMax;
+
+// ════════════════════════════════════════════════════════════════
+//  CSV COLUMN AUTO-DETECTION
+// ════════════════════════════════════════════════════════════════
+/**
+ * Detects Year/Month/Day and Max/Min columns regardless of exact naming.
+ */
+function detectColumns(firstRow) {
+  const keys  = Object.keys(firstRow);
+  const clean = keys.map(k => k.toLowerCase().replace(/[\s_\-()']/g, ""));
+
+  const find = (...terms) => {
+    const i = clean.findIndex(k => terms.some(t => k === t || k.startsWith(t)));
+    return i >= 0 ? keys[i] : null;
+  };
+
+  return {
+    yearCol:  find("year","yyyy","yr"),
+    monthCol: find("month","mon","mm"),
+    dayCol:   find("day","dd"),
+    dateCol:  find("date","datetime","yyyymmdd"),
+    maxCol:   find("max","maximum","tmax","maximumtemperature","hightemp"),
+    minCol:   find("min","minimum","tmin","minimumtemperature","lowtemp"),
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+//  DATA PARSING
+// ════════════════════════════════════════════════════════════════
+/**
+ * Converts raw CSV rows into clean daily records:
+ * { year, month (0-indexed), day, max, min }
+ */
+function parseDailyRecords(rawRows) {
+  if (!rawRows.length) return [];
+  const cols = detectColumns(rawRows[0]);
+  console.log("[HKTemp] Columns:", cols);
+  console.log("[HKTemp] Sample:", rawRows[0]);
+
+  return rawRows.flatMap(row => {
+    let year, month, day;
+
+    if (cols.yearCol && cols.monthCol && cols.dayCol) {
+      year  = +row[cols.yearCol];
+      month = +row[cols.monthCol] - 1;
+      day   = +row[cols.dayCol];
+    } else if (cols.dateCol) {
+      const raw = String(row[cols.dateCol]).trim();
+      const d   = /^\d{8}$/.test(raw)
+        ? new Date(+raw.slice(0,4), +raw.slice(4,6)-1, +raw.slice(6,8))
+        : new Date(raw);
+      if (isNaN(d)) return [];
+      year = d.getFullYear(); month = d.getMonth(); day = d.getDate();
+    } else return [];
+
+    if (isNaN(year) || isNaN(month) || isNaN(day)) return [];
+
+    const maxV = cols.maxCol ? +row[cols.maxCol] : NaN;
+    const minV = cols.minCol ? +row[cols.minCol] : NaN;
+
+    const validMax = !isNaN(maxV) && maxV > -50 && maxV < 60;
+    const validMin = !isNaN(minV) && minV > -50 && minV < 60;
+    if (!validMax && !validMin) return [];
+
+    return [{ year, month, day,
+              max: validMax ? maxV : null,
+              min: validMin ? minV : null }];
+  });
+}
+
+/**
+ * Groups records into Map(year → Map(month → [records])).
+ * Retains only the most recent `numYears` years.
+ */
+function buildMonthlyMap(dailyRecords, numYears) {
+  const allYears = [...new Set(dailyRecords.map(d => d.year))].sort((a,b)=>a-b);
+  const years    = allYears.slice(-numYears);
+  const map      = new Map(years.map(yr => [yr, new Map()]));
+
+  dailyRecords
+    .filter(d => years.includes(d.year))
+    .forEach(d => {
+      const ym = map.get(d.year);
+      if (!ym.has(d.month)) ym.set(d.month, []);
+      ym.get(d.month).push(d);
+    });
+
+  return { monthlyMap: map, years };
+}
+
+/**
+ * Computes the shared fixed numeric domain across BOTH max and min values.
+ * This ensures the legend range never changes when toggling modes.
+ */
+function computeGlobalDomain(dailyRecords) {
+  const allMax = dailyRecords.map(r => r.max).filter(v => v !== null);
+  const allMin = dailyRecords.map(r => r.min).filter(v => v !== null);
+  const allVals = [...allMax, ...allMin];
+  const [lo, hi] = d3.extent(allVals);
+  // Round to nearest integer for cleaner labels
+  return { globalMin: Math.floor(lo), globalMax: Math.ceil(hi) };
+}
+
+/**
+ * Produces flat cell objects for every (year × month).
+ */
+function buildCellData(monthlyMap, years, mode) {
+  return years.flatMap(yr => {
+    const ym = monthlyMap.get(yr);
+    return d3.range(12).map(m => {
+      const recs    = ym.get(m) ?? [];
+      const valid   = recs.filter(r => r[mode] !== null);
+      const value   = valid.length === 0 ? null
+        : mode === "max" ? d3.max(valid, r => r.max)
+                         : d3.min(valid, r => r.min);
+      const maxRecs = recs.filter(r => r.max !== null).sort((a,b) => a.day - b.day);
+      const minRecs = recs.filter(r => r.min !== null).sort((a,b) => a.day - b.day);
+      return { year: yr, month: m, value, dailyMax: maxRecs, dailyMin: minRecs };
+    });
+  });
+}
+
+// ════════════════════════════════════════════════════════════════
+//  COLOR SCALE  — fixed domain, mode-specific ramp
+// ════════════════════════════════════════════════════════════════
+/**
+ * Builds a piecewise color scale using the SHARED global domain
+ * (same numeric range for both max and min modes) but with a
+ * mode-specific color ramp for intuitive interpretation.
+ *
+ * @param {string} mode        "max" | "min"
+ * @param {number} globalMin   shared domain minimum
+ * @param {number} globalMax   shared domain maximum
+ */
+function buildColorScale(mode, globalMin, globalMax) {
+  const stops = mode === "max" ? CONFIG.colorStopsMax : CONFIG.colorStopsMin;
+  const domain = stops.map(s => globalMin + s.t * (globalMax - globalMin));
+  const colors = stops.map(s => s.c);
+
+  return d3.scaleLinear()
+    .domain(domain)
+    .range(colors)
+    .interpolate(d3.interpolateRgb)
+    .clamp(true);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  LAYOUT
+// ════════════════════════════════════════════════════════════════
+function buildLayout(years) {
+  const step  = CONFIG.cellW + CONFIG.cellGap;
+  const vstep = CONFIG.cellH + CONFIG.cellGap;
+  const svgW  = CONFIG.marginLeft + years.length * step  + CONFIG.marginRight;
+  const svgH  = CONFIG.marginTop  + 12 * vstep           + CONFIG.marginBottom;
+
+  const xScale = d3.scaleBand()
+    .domain(years)
+    .range([CONFIG.marginLeft, CONFIG.marginLeft + years.length * step])
+    .paddingInner(CONFIG.cellGap / step);
+
+  const yScale = d3.scaleBand()
+    .domain(d3.range(12))
+    .range([CONFIG.marginTop, CONFIG.marginTop + 12 * vstep])
+    .paddingInner(CONFIG.cellGap / vstep);
+
+  return { svgW, svgH, xScale, yScale };
+}
+
+// ════════════════════════════════════════════════════════════════
+//  SPARKLINES  (both max=green and min=grey always drawn)
+// ════════════════════════════════════════════════════════════════
+/**
+ * Draws two sparklines inside the cell group:
+ *  — green line: daily max temperatures
+ *  — grey line:  daily min temperatures
+ * Both share the same y-scale for honest in-cell comparison.
+ */
+function renderSparklines(cellG, dailyMax, dailyMin, cellW, cellH) {
+  const allRecs = [...dailyMax, ...dailyMin];
+  if (!allRecs.length) return;
+
+  const { t, r, b, l } = CONFIG.sparkPad;
+  const iW = cellW - l - r;
+  const iH = cellH - t - b;
+
+  const allVals = [
+    ...dailyMax.map(d => d.max),
+    ...dailyMin.map(d => d.min)
+  ].filter(v => v !== null);
+  if (!allVals.length) return;
+
+  const [tlo, thi] = d3.extent(allVals);
+  const pad    = (thi - tlo) < 1 ? 0.5 : 0;
+  const maxDay = d3.max(allRecs, d => d.day) || 31;
+
+  const xDay  = d3.scaleLinear().domain([1, maxDay]).range([0, iW]);
+  const yTemp = d3.scaleLinear().domain([tlo - pad, thi + pad]).range([iH, 0]);
+
+  const makeLine = field => d3.line()
+    .x(d => xDay(d.day))
+    .y(d => yTemp(d[field]))
+    .curve(d3.curveMonotoneX);
+
+  const g = cellG.append("g")
+    .attr("class","sparkline-g")
+    .attr("transform", `translate(${l},${t})`);
+
+  if (dailyMin.length >= 2) {
+    g.append("path").datum(dailyMin)
+      .attr("fill","none")
+      .attr("stroke", CONFIG.sparkMinColor)
+      .attr("stroke-width", CONFIG.sparkLineW)
+      .attr("opacity", 0.80)
+      .attr("d", makeLine("min"));
+  }
+
+  if (dailyMax.length >= 2) {
+    g.append("path").datum(dailyMax)
+      .attr("fill","none")
+      .attr("stroke", CONFIG.sparkMaxColor)
+      .attr("stroke-width", CONFIG.sparkLineW)
+      .attr("opacity", 0.85)
+      .attr("d", makeLine("max"));
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  AXIS LABELS
+// ════════════════════════════════════════════════════════════════
+function renderYearLabels(svg, xScale, years) {
+  svg.selectAll(".year-label, .axis-top").remove();
+
+  svg.append("line").attr("class","axis-top")
+    .attr("x1", CONFIG.marginLeft)
+    .attr("x2", xScale(years[years.length - 1]) + xScale.bandwidth())
+    .attr("y1", CONFIG.marginTop).attr("y2", CONFIG.marginTop)
+    .attr("stroke","#bbb").attr("stroke-width", 1);
+
+  svg.selectAll(".year-label")
+    .data(years).enter()
+    .append("text")
+      .attr("class","year-label")
+      .attr("x", yr => xScale(yr) + xScale.bandwidth() / 2)
+      .attr("y", CONFIG.marginTop - 8)
+      .attr("text-anchor","middle")
+      .attr("font-size","12px")
+      .attr("fill","#333")
+      .text(d => d);
+}
+
+function renderMonthLabels(svg, yScale) {
+  svg.selectAll(".month-label, .axis-left").remove();
+
+  svg.append("line").attr("class","axis-left")
+    .attr("x1", CONFIG.marginLeft).attr("x2", CONFIG.marginLeft)
+    .attr("y1", CONFIG.marginTop)
+    .attr("y2", yScale(11) + yScale.bandwidth())
+    .attr("stroke","#bbb").attr("stroke-width", 1);
+
+  svg.selectAll(".month-label")
+    .data(MONTH_FULL).enter()
+    .append("text")
+      .attr("class","month-label")
+      .attr("x", CONFIG.marginLeft - 6)
+      .attr("y", (_, i) => yScale(i) + yScale.bandwidth() / 2 + 4)
+      .attr("text-anchor","end")
+      .attr("font-size","12px")
+      .attr("fill","#333")
+      .text(d => d);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  TOOLTIP
+// ════════════════════════════════════════════════════════════════
+/**
+ * Attaches hover events showing:  Date: YYYY-MM, max: X°C  min: Y°C
+ */
+function attachTooltip(hitRect, d) {
+  const tip = d3.select("#tooltip");
+  hitRect
+    .on("mouseover", function() {
+      if (!d.dailyMax.length && !d.dailyMin.length) return;
+      const maxVal = d.dailyMax.length
+        ? d3.max(d.dailyMax, r => r.max).toFixed(1) : "—";
+      const minVal = d.dailyMin.length
+        ? d3.min(d.dailyMin, r => r.min).toFixed(1) : "—";
+      const mm = String(d.month + 1).padStart(2,"0");
+      tip.style("opacity",1)
+         .html(`Date: ${d.year}-${mm} &nbsp;|&nbsp; max: <b>${maxVal}°C</b> &nbsp; min: <b>${minVal}°C</b>`);
+    })
+    .on("mousemove", function(event) {
+      const x = Math.min(event.clientX + 14, window.innerWidth - 280);
+      const y = Math.max(event.clientY - 36, 4);
+      tip.style("left", x + "px").style("top", y + "px");
+    })
+    .on("mouseout", function() { tip.style("opacity", 0); });
+}
+
+// ════════════════════════════════════════════════════════════════
+//  CELL RENDERING
+// ════════════════════════════════════════════════════════════════
+/**
+ * Renders all matrix cells. Uses D3 data-join so only colors
+ * transition on mode switch — no full teardown.
+ */
+function renderCells(svg, cellData, xScale, yScale, colorScale, mode, animate) {
+  const cellW = xScale.bandwidth();
+  const cellH = yScale.bandwidth();
+  const dur   = animate ? CONFIG.animDuration : 0;
+
+  const groups = svg.selectAll(".cell-g")
+    .data(cellData, d => `${d.year}-${d.month}`);
+
+  // ── ENTER ──
+  const entering = groups.enter()
+    .append("g")
+      .attr("class","cell-g")
+      .attr("transform", d => `translate(${xScale(d.year)},${yScale(d.month)})`)
+      .style("cursor","pointer");
+
+  entering.append("rect")
+    .attr("class","cell-bg")
+    .attr("width",  cellW).attr("height", cellH)
+    .attr("rx", 4)
+    .attr("stroke","#fff").attr("stroke-width", 1.5)
+    .attr("fill", d => d.value !== null ? colorScale(d.value) : "#e8e8e8");
+
+  entering.append("g").attr("class","spark-wrap");
+
+  entering.append("rect")
+    .attr("class","hit-rect")
+    .attr("width", cellW).attr("height", cellH)
+    .attr("rx", 4).attr("fill","transparent");
+
+  entering.each(function(d) {
+    attachTooltip(d3.select(this).select(".hit-rect"), d);
+  });
+
+  // ── UPDATE ──
+  const merged = entering.merge(groups);
+
+  merged.select(".cell-bg")
+    .transition().duration(dur).ease(d3.easeCubicInOut)
+    .attr("fill", d => d.value !== null ? colorScale(d.value) : "#e8e8e8");
+
+  merged.each(function(d) {
+    d3.select(this).select(".spark-wrap").selectAll("*").remove();
+    renderSparklines(
+      d3.select(this).select(".spark-wrap"),
+      d.dailyMax, d.dailyMin, cellW, cellH
+    );
+  });
+
+  groups.exit().remove();
+}
+
+// ════════════════════════════════════════════════════════════════
+//  LEGEND  — vertical bar, FIXED numeric range, dynamic gradient
+// ════════════════════════════════════════════════════════════════
+/**
+ * Draws the vertical color legend. The numeric domain (globalMin–globalMax)
+ * is FIXED and identical for both modes so the range never jumps.
+ * Only the gradient colors change to reflect max vs min ramp.
+ *
+ * @param {Function} colorScale   D3 scale for the current mode
+ * @param {number}   globalMin    fixed domain minimum (shared)
+ * @param {number}   globalMax    fixed domain maximum (shared)
+ * @param {number}   matrixH      matrix SVG height (for vertical alignment)
+ * @param {string}   mode         "max" | "min"
+ */
+function renderLegend(colorScale, globalMin, globalMax, matrixH, mode) {
+  const legSvg = d3.select("#legend-svg");
+  legSvg.selectAll("*").remove();
+
+  const barW = CONFIG.legendBarW;
+  const barH = CONFIG.legendBarH;
+
+  // Centre the bar vertically within the matrix
+  const mT = Math.max(
+    CONFIG.legendMarginT,
+    CONFIG.marginTop + ((matrixH - CONFIG.marginTop - CONFIG.marginBottom) - barH) / 2
+  );
+
+  legSvg.attr("width", CONFIG.legendW + 20).attr("height", matrixH);
+
+  // ── Gradient ──
+  const defs = legSvg.append("defs");
+  const grad = defs.append("linearGradient")
+    .attr("id","leg-grad")
+    .attr("x1","0%").attr("x2","0%")
+    .attr("y1","0%").attr("y2","100%");
+
+  // Top of bar = globalMax (hottest), bottom = globalMin (coldest)
+  const steps = 120;
+  d3.range(steps + 1).forEach(i => {
+    const t   = i / steps;
+    const tmp = globalMax - t * (globalMax - globalMin);
+    grad.append("stop")
+      .attr("offset", `${t * 100}%`)
+      .attr("stop-color", colorScale(tmp));
+  });
+
+  const g = legSvg.append("g").attr("transform", `translate(4,${mT})`);
+
+  // ── Bar rect ──
+  g.append("rect")
+    .attr("width", barW).attr("height", barH)
+    .attr("fill","url(#leg-grad)")
+    .attr("stroke","#ccc").attr("stroke-width", 0.5);
+
+  // ── Mode label (rotated, left of bar) ──
+  g.append("text")
+    .attr("transform", `translate(${-8},${barH / 2}) rotate(-90)`)
+    .attr("text-anchor","middle")
+    .attr("font-size","10px").attr("fill","#888")
+    .text(mode === "max" ? "Max Temp (°C)" : "Min Temp (°C)");
+
+  // ── Ticks at evenly-spaced integer values across the FIXED domain ──
+  const tickCount = 5;   // top, 3 intermediate, bottom
+  d3.range(tickCount + 1).forEach(i => {
+    const frac  = i / tickCount;
+    // Temperature: top = globalMax, bottom = globalMin
+    const tmp   = globalMax - frac * (globalMax - globalMin);
+    const y     = frac * barH;
+    const isEnd = (i === 0 || i === tickCount);
+
+    // White inner tick line on gradient
+    if (!isEnd) {
+      g.append("line")
+        .attr("x1", 0).attr("x2", barW)
+        .attr("y1", y).attr("y2", y)
+        .attr("stroke","rgba(255,255,255,0.4)").attr("stroke-width", 0.8);
+    }
+
+    // Outer tick mark
+    g.append("line")
+      .attr("x1", barW).attr("x2", barW + 5)
+      .attr("y1", y).attr("y2", y)
+      .attr("stroke","#888").attr("stroke-width", 1);
+
+    // Label: round to nearest integer, same for both modes
+    g.append("text")
+      .attr("x", barW + 8)
+      .attr("y", y + (i === 0 ? 4 : i === tickCount ? 0 : 4))
+      .attr("dominant-baseline", i === tickCount ? "auto" : "hanging")
+      .attr("font-size", isEnd ? "11px" : "10px")
+      .attr("font-weight", isEnd ? "600" : "400")
+      .attr("fill", isEnd ? "#333" : "#666")
+      .text(`${Math.round(tmp)}°C`);
+  });
+}
+
+// ════════════════════════════════════════════════════════════════
+//  FULL DRAW
+// ════════════════════════════════════════════════════════════════
+/**
+ * Orchestrates a full (re)draw of the matrix and legend.
+ */
+function draw(monthlyMap, years, mode, animate) {
+  const cellData   = buildCellData(monthlyMap, years, mode);
+  const colorScale = buildColorScale(mode, _globalMin, _globalMax);
+  const { svgW, svgH, xScale, yScale } = buildLayout(years);
+
+  const svg = d3.select("#matrix-svg")
+    .attr("width",  svgW)
+    .attr("height", svgH);
+
+  renderYearLabels(svg, xScale, years);
+  renderMonthLabels(svg, yScale);
+  renderCells(svg, cellData, xScale, yScale, colorScale, mode, animate);
+  renderLegend(colorScale, _globalMin, _globalMax, svgH, mode);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  BUTTON SWITCH
+// ════════════════════════════════════════════════════════════════
+/**
+ * Switches the active mode, updates button styles, and redraws.
+ */
+function switchMode(mode) {
+  if (mode === currentMode) return;
+  currentMode = mode;
+
+  document.getElementById("btn-max").classList.toggle("active", mode === "max");
+  document.getElementById("btn-min").classList.toggle("active", mode === "min");
+
+  draw(_monthlyMap, _years, currentMode, true);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  ENTRY POINT
+// ════════════════════════════════════════════════════════════════
+d3.csv("temperature_daily.csv").then(rawRows => {
+  console.log("[HKTemp] Columns:", Object.keys(rawRows[0]));
+  console.log("[HKTemp] Sample:", rawRows[0]);
+
+  const daily = parseDailyRecords(rawRows);
+  console.log(`[HKTemp] Valid records: ${daily.length}`);
+
+  if (!daily.length) {
+    showError("No valid temperature records found. Check the browser console for column names.");
+    return;
+  }
+
+  // Compute shared fixed domain from ALL records (both max and min)
+  ({ globalMin: _globalMin, globalMax: _globalMax } = computeGlobalDomain(daily));
+  console.log(`[HKTemp] Global domain: ${_globalMin}°C – ${_globalMax}°C`);
+
+  ({ monthlyMap: _monthlyMap, years: _years } =
+    buildMonthlyMap(daily, CONFIG.numYears));
+
+  draw(_monthlyMap, _years, currentMode, false);
+
+}).catch(err => {
+  showError(`Failed to load temperature_daily.csv — ${err.message}`);
+  console.error(err);
+});
+
+function showError(msg) {
+  document.body.insertAdjacentHTML("beforeend",
+    `<p style="color:#c00;text-align:center;margin-top:20px;font-size:13px;
+               background:#fff0f0;padding:10px;border-radius:6px;
+               max-width:520px;margin-inline:auto">${msg}</p>`);
+}
+</script>
+</body>
+</html>
